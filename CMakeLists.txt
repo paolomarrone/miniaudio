@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.13)
 
 # Extract version from miniaudio.h
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/miniaudio.h" MINIAUDIO_HEADER_CONTENTS)
@@ -19,6 +19,7 @@ option(MINIAUDIO_BUILD_TESTS                   "Build miniaudio tests"          
 option(MINIAUDIO_BUILD_TOOLS                   "Build miniaudio development tools. Leave this disabled unless you know what you're doing. If you enable this and you get build errors, you clearly do not know what you're doing and yet you still enabled this option. Why would you do that?" OFF)
 option(MINIAUDIO_FORCE_CXX                     "Force compilation as C++"            OFF)
 option(MINIAUDIO_FORCE_C89                     "Force compilation as C89"            OFF)
+option(MINIAUDIO_WARNINGS_AS_ERRORS            "Treat warnings as errors"            OFF)
 option(MINIAUDIO_NO_EXTRA_NODES                "Do not build extra node graph nodes" OFF)
 option(MINIAUDIO_NO_LIBVORBIS                  "Disable miniaudio_libvorbis"         OFF)
 option(MINIAUDIO_NO_LIBOPUS                    "Disable miniaudio_libopus"           OFF)
@@ -102,15 +103,7 @@ if(MINIAUDIO_FORCE_CXX AND MINIAUDIO_FORCE_C89)
 endif()
 
 if(MINIAUDIO_FORCE_CXX)
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(STATUS "Compiling as C++ (GNU/Clang)")
-        list(APPEND COMPILE_OPTIONS -x c++)
-    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-        message(STATUS "Compiling as C++ (MSVC)")
-        list(APPEND COMPILE_OPTIONS /TP)
-    else()
-        message(WARNING "MINIAUDIO_FORCE_CXX is enabled but the compiler does not support it. Ignoring.")
-    endif()
+    message(STATUS "Compiling miniaudio libraries as C++")
 endif()
 
 if(MINIAUDIO_FORCE_C89)
@@ -129,6 +122,18 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"
     list(APPEND COMPILE_OPTIONS -Wall -Wextra -Wpedantic)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     #list(APPEND COMPILE_OPTIONS /W4)
+endif()
+
+
+# Warnings as errors are opt-in and do not apply to bundled dependencies.
+if(MINIAUDIO_WARNINGS_AS_ERRORS)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND COMPILE_OPTIONS -Werror)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        list(APPEND COMPILE_OPTIONS /WX)
+    else()
+        message(WARNING "MINIAUDIO_WARNINGS_AS_ERRORS is enabled but the compiler does not support it. Ignoring.")
+    endif()
 endif()
 
 
@@ -414,58 +419,64 @@ endif()
 
 # SteamAudio has an annoying SDK setup. In the lib folder there is a folder for each platform. We need to specify the
 # platform we're compiling for.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
-    # Assume 64-bit. Now we need to check if it's for Windows or Linux.
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" MINIAUDIO_PROCESSOR_LOWER)
+
+set(STEAMAUDIO_ARCH "")
+
+if(MINIAUDIO_PROCESSOR_LOWER MATCHES "^(x86_64|amd64)$")
     if(WIN32)
         set(STEAMAUDIO_ARCH windows-x64)
-    else()
+    elseif(UNIX AND NOT APPLE)
         set(STEAMAUDIO_ARCH linux-x64)
     endif()
-else()
-    # Assume 32-bit. Now we need to check if it's for Windows or Linux.
+elseif(MINIAUDIO_PROCESSOR_LOWER MATCHES "^(x86|i[3-6]86)$")
     if(WIN32)
         set(STEAMAUDIO_ARCH windows-x86)
-    else()
+    elseif(UNIX AND NOT APPLE)
         set(STEAMAUDIO_ARCH linux-x86)
     endif()
 endif()
 
-# When searching for SteamAudio, we'll support installing it in the external/steamaudio directory.
-set(STEAMAUDIO_FIND_LIBRARY_HINTS)
-list(APPEND STEAMAUDIO_FIND_LIBRARY_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/external/steamaudio/lib/${STEAMAUDIO_ARCH})
+if(STEAMAUDIO_ARCH)
+    # When searching for SteamAudio, we'll support installing it in the external/steamaudio directory.
+    set(STEAMAUDIO_FIND_LIBRARY_HINTS)
+    list(APPEND STEAMAUDIO_FIND_LIBRARY_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/external/steamaudio/lib/${STEAMAUDIO_ARCH})
 
-if(WIN32)
-else()
-    list(APPEND STEAMAUDIO_FIND_LIBRARY_HINTS /opt/steamaudio/lib/${STEAMAUDIO_ARCH})
-    list(APPEND STEAMAUDIO_FIND_LIBRARY_HINTS /usr/local/steamaudio/lib/${STEAMAUDIO_ARCH})
-endif()
-
-set(STEAMAUDIO_FIND_HEADER_HINTS)
-list(APPEND STEAMAUDIO_FIND_HEADER_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/external/steamaudio/include)
-
-if(WIN32)
-else()
-    list(APPEND STEAMAUDIO_FIND_HEADER_HINTS /opt/steamaudio/include)
-    list(APPEND STEAMAUDIO_FIND_HEADER_HINTS /usr/local/steamaudio/include)
-endif()
-
-
-find_library(STEAMAUDIO_LIBRARY NAMES phonon HINTS ${STEAMAUDIO_FIND_LIBRARY_HINTS})
-if(STEAMAUDIO_LIBRARY)
-    message(STATUS "Found SteamAudio: ${STEAMAUDIO_LIBRARY}")
-
-    find_path(STEAMAUDIO_INCLUDE_DIR
-        NAMES phonon.h
-        HINTS ${STEAMAUDIO_FIND_HEADER_HINTS}
-    )
-    if(STEAMAUDIO_INCLUDE_DIR)
-        message(STATUS "Found phonon.h in ${STEAMAUDIO_INCLUDE_DIR}")
-        set(HAS_STEAMAUDIO TRUE)
+    if(WIN32)
     else()
-        message(STATUS "Could not find phonon.h. miniaudio_engine_steamaudio will be excluded.")
+        list(APPEND STEAMAUDIO_FIND_LIBRARY_HINTS /opt/steamaudio/lib/${STEAMAUDIO_ARCH})
+        list(APPEND STEAMAUDIO_FIND_LIBRARY_HINTS /usr/local/steamaudio/lib/${STEAMAUDIO_ARCH})
+    endif()
+
+    set(STEAMAUDIO_FIND_HEADER_HINTS)
+    list(APPEND STEAMAUDIO_FIND_HEADER_HINTS ${CMAKE_CURRENT_SOURCE_DIR}/external/steamaudio/include)
+
+    if(WIN32)
+    else()
+        list(APPEND STEAMAUDIO_FIND_HEADER_HINTS /opt/steamaudio/include)
+        list(APPEND STEAMAUDIO_FIND_HEADER_HINTS /usr/local/steamaudio/include)
+    endif()
+
+
+    find_library(STEAMAUDIO_LIBRARY NAMES phonon HINTS ${STEAMAUDIO_FIND_LIBRARY_HINTS})
+    if(STEAMAUDIO_LIBRARY)
+        message(STATUS "Found SteamAudio: ${STEAMAUDIO_LIBRARY}")
+
+        find_path(STEAMAUDIO_INCLUDE_DIR
+            NAMES phonon.h
+            HINTS ${STEAMAUDIO_FIND_HEADER_HINTS}
+        )
+        if(STEAMAUDIO_INCLUDE_DIR)
+            message(STATUS "Found phonon.h in ${STEAMAUDIO_INCLUDE_DIR}")
+            set(HAS_STEAMAUDIO TRUE)
+        else()
+            message(STATUS "Could not find phonon.h. miniaudio_engine_steamaudio will be excluded.")
+        endif()
+    else()
+        message(STATUS "SteamAudio not found. miniaudio_engine_steamaudio will be excluded.")
     endif()
 else()
-    message(STATUS "SteamAudio not found. miniaudio_engine_steamaudio will be excluded.")
+    message(STATUS "SteamAudio is not supported on ${CMAKE_SYSTEM_PROCESSOR}. miniaudio_engine_steamaudio will be excluded.")
 endif()
 
 
@@ -500,6 +511,30 @@ if (UNIX)
     endif()
 endif()
 
+function(set_source_file_language_cxx source)
+    set_source_files_properties("${source}" PROPERTIES LANGUAGE CXX)
+
+    # Clang warns when a .c file is compiled as C++ without an explicit language flag.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
+        set_property(SOURCE "${source}" APPEND PROPERTY COMPILE_OPTIONS -x c++)
+    endif()
+endfunction()
+
+
+# APPLE is true for all Apple platforms. 
+# For macOS (MA_APPLE_DESKTOP, "Darwin" in CMake), the code uses CoreAudio that does not need Objective-C.
+# For the other Apple platforms, the code uses AVFoundation that requires Objective-C.
+if(APPLE AND NOT (CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
+    if(MINIAUDIO_FORCE_CXX)
+        enable_language(OBJCXX)
+        set_source_files_properties(miniaudio.c PROPERTIES LANGUAGE OBJCXX)
+    else()
+        enable_language(OBJC)
+        set_source_files_properties(miniaudio.c PROPERTIES LANGUAGE OBJC)
+    endif()
+elseif(MINIAUDIO_FORCE_CXX)
+    set_source_file_language_cxx(miniaudio.c)
+endif()
 
 # Static Libraries
 add_library(miniaudio
@@ -535,6 +570,10 @@ if(HAS_LIBVORBIS)
         extras/decoders/libvorbis/miniaudio_libvorbis.h
     )
 
+    if(MINIAUDIO_FORCE_CXX)
+        set_source_file_language_cxx(extras/decoders/libvorbis/miniaudio_libvorbis.c)
+    endif()
+
     list(APPEND LIBS_TO_INSTALL miniaudio_libvorbis)
     if(MINIAUDIO_INSTALL)
         install(FILES extras/decoders/libvorbis/miniaudio_libvorbis.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/miniaudio/extras/decoders/libvorbis)
@@ -565,6 +604,10 @@ if(HAS_LIBOPUS)
         extras/decoders/libopus/miniaudio_libopus.h
     )
 
+    if(MINIAUDIO_FORCE_CXX)
+        set_source_file_language_cxx(extras/decoders/libopus/miniaudio_libopus.c)
+    endif()
+
 
     list(APPEND LIBS_TO_INSTALL miniaudio_libopus)
     if(MINIAUDIO_INSTALL)
@@ -584,6 +627,10 @@ if (NOT MINIAUDIO_NO_EXTRA_NODES)
             extras/nodes/ma_${name}_node/ma_${name}_node.c
             extras/nodes/ma_${name}_node/ma_${name}_node.h
         )
+
+        if(MINIAUDIO_FORCE_CXX)
+            set_source_file_language_cxx(extras/nodes/ma_${name}_node/ma_${name}_node.c)
+        endif()
         
         set(libs "${LIBS_TO_INSTALL}")
 
